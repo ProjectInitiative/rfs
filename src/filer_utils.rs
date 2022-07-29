@@ -130,50 +130,45 @@ pub fn convert_json_swfsfile_vec(json: serde_json::Value) -> Vec<SwfsFile>
         };
         swfs_files.push(swfs_file);
     }
-    return swfs_files;
+    swfs_files
 }
 
 pub fn convert_unix_sec_to_system_time(seconds: u64) -> SystemTime {
     let duration = Duration::from_secs(seconds);
-    return UNIX_EPOCH + duration;
+    UNIX_EPOCH + duration
 }
 
 fn convert_rc3339_to_system_time(time: String) -> SystemTime {
     let rfc3339 = DateTime::parse_from_rfc3339(&time).unwrap();
     let duration = Duration::from_millis(rfc3339.timestamp_millis() as u64);
-    return UNIX_EPOCH + duration;
+    UNIX_EPOCH + duration
 }
 
 fn calc_file_name_from_path(full_path: String) -> String {
     let mut path = full_path.clone();
-    if path.len() > 1 && full_path.ends_with('/')
-    {
-        _ = &path.pop();
-    }
-    return path.split('/').last().unwrap_or("").into();
+    // remove trailing slash
+    if path.len() > 1 && full_path.ends_with('/') { _ = &path.pop(); }
+    path.split('/').last().unwrap_or("").into()
 }
 
 fn calc_parent_from_path(full_path: String) -> String {
     let mut path = full_path.clone();
     // remove trailing slash
-    if path.len() > 1 && full_path.ends_with('/')
-    {
-        _ = &path.pop();
-    }
+    if path.len() > 1 && full_path.ends_with('/') { _ = &path.pop(); }
     let mut path_vec: Vec<&str> = path.split('/').collect();
-    if path_vec.len() > 2 && !path_vec.last().unwrap().eq(&"") { _ = path_vec.pop(); }
+    // if there are only two elements ["","test1"] ensure second item is ""
+    // so join will properly add the root parent /
     if path_vec.len() == 2 { path_vec[1] = ""; }
+    // if path is longer than / or /parent1, remove last item from vec
+    if path_vec.len() > 2 && !path_vec.last().unwrap().eq(&"") { _ = path_vec.pop(); }
     path_vec.join("/")
 }
 
 fn calc_parent_num_from_path(full_path: String) -> u64 {
     let mut path = full_path.clone();
-    // remove last character if a '/'
-    if path.len() > 1 && full_path.ends_with('/')
-    {
-        _ = &path.pop();
-    }
-    return path.split('/').count() as u64 - 1;
+    // remove trailing slash
+    if path.len() > 1 && full_path.ends_with('/') { _ = &path.pop(); }
+    path.split('/').count() as u64 - 1
 }
 
 
