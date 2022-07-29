@@ -4,8 +4,8 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
-    /// [SCHEME://HOST:PORT]|[filer2]|[filer3]
-    /// seaweedfs filers (gRPC port) "|" delimited,
+    /// [SCHEME://HOST:PORT],[filer2],[filer3]
+    /// seaweedfs filers (gRPC port) ," delimited,
     /// defaults to first in list, following round robin upon failures
     #[clap(long = "filer", value_parser, default_value_t = String::from("http://localhost:18888"))]
     pub filer_addr: String,

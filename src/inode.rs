@@ -28,24 +28,24 @@ impl InodeTable {
         return inode;
     }
 
-    pub fn add_or_update_file_attr(&mut self, f: SwfsFile) 
-    {
-        self.parent_table
-            .entry(f.parent)
-            .or_default()
-            .insert(f.name.clone(), f.file_attr.ino);
-        self.inode_table
-            .insert(f.file_attr.ino, f.clone());
-    }
-
-    pub fn delete_file_attr(&mut self, f: SwfsFile)
-    {
-        self.inode_table.remove(&f.file_attr.ino);
-        self.parent_table
-            .entry(f.parent)
-            .or_default()
-            .remove(&f.name);
-    }
+    // pub fn add_or_update_file_attr(&mut self, f: SwfsFile) 
+    // {
+    //     self.parent_table
+    //         .entry(f.parent)
+    //         .or_default()
+    //         .insert(f.name.clone(), f.file_attr.ino);
+    //     self.inode_table
+    //         .insert(f.file_attr.ino, f.clone());
+    // }
+    //
+    // pub fn delete_file_attr(&mut self, f: SwfsFile)
+    // {
+    //     self.inode_table.remove(&f.file_attr.ino);
+    //     self.parent_table
+    //         .entry(f.parent)
+    //         .or_default()
+    //         .remove(&f.name);
+    // }
 
     pub fn file_attr_from_inode(&mut self, inode: u64) -> Option<&SwfsFile>
     {

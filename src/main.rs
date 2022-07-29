@@ -1,31 +1,30 @@
 
 use clap::Parser;
-// use swfs::Swfs;
-use fuse_mount2::HelloFS;
 use fuser::MountOption;
-use inode::InodeTable;
-use url::Url;
-use filer_pb::seaweed_filer_client::SeaweedFilerClient;
-use filer_pb::LookupDirectoryEntryRequest;
+use swfs::Swfs;
+use std::ffi::OsStr;
+
+use crate::filer_client::FilerClient;
 
 
 #[macro_use]
 extern crate log;
 
 mod options;
+mod errors;
 mod filer_requests;
+mod filer_client;
 mod swfs;
-// mod fuse_mount;
 mod fuse_mount2;
 mod filer_utils;
 mod inode;
 
 
+
 struct ConsoleLogger;
 
 impl log::Log for ConsoleLogger {
-    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-        true
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool { true
     }
 
     fn log(&self, record: &log::Record<'_>) {
@@ -43,8 +42,8 @@ pub mod filer_pb {
     tonic::include_proto!("filer_pb");
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>>  {
+fn main() -> Result<(), Box<dyn std::error::Error>>  {
+// fn main() {
     // collect arguments
     let args = options::Args::parse();
 
@@ -53,31 +52,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>  {
     else if args.quiet { log::set_max_level(log::LevelFilter::Off) }
     else { log::set_max_level(log::LevelFilter::Info); }
     
-
-    let filer_urls = &args.filer_addr
-    .split("|").collect::<Vec<&str>>()
-    .iter().map(
-        |filer_str| 
-        {
-            let filer_url = match parse_str_to_url(filer_str.to_string())
-            {
-                Ok(url) => {
-                    if !url.has_host()
-                    {
-                        error!("missing filer scheme or host address, rerun with -h|--help to see proper format");
-                        std::process::exit(1);
-                    }
-                    info!("attempting to connect to filer: {:?}",url.as_str());
-                    return url;
-                },
-                Err(e) => { 
-                    error!("parsing url: {e:?}");
-                    std::process::exit(1);
-                }
-            };
-        }
-    ).collect::<Vec<Url>>();
     
+    let filer_client: FilerClient = match FilerClient::new(args.filer_addr)
+    {
+        Ok(filer_client) => { filer_client }
+        Err(e) => 
+        { 
+            error!("{:?}", e);
+            std::process::exit(1);
+        }
+    };
+
     // env_logger::init();
     let mountpoint = args.mnt_dir;
     let mut options = vec![MountOption::RO, MountOption::FSName("hello".to_string())];
@@ -88,37 +73,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>  {
     //     options.push(MountOption::AllowRoot);
     // }
 
-    // let swfs = Swfs { 
-    //     base_urls: filer_urls.to_vec(),
-    //     inode_table: InodeTable::new()
-    // };
+    // let rt = Runtime::new().unwrap();
+    // let handle = rt.handle().clone();
 
-    // let filesystem = Swfs {
-    //     target: mountpoint.into(),
-    // };
+    let filesystem = Swfs {
+        target: mountpoint.clone().into(),
+        // rt: tokio::runtime::Builder::new_multi_thread()
+        //         .enable_all()
+        //         .build()
+        //         .unwrap(),
+        // handle: Handle::current(),
+        filer_client: filer_client,
+    };
 
-    // fuser::mount2(swfs, mountpoint, &options);
-    // fuser::mount2(HelloFS, mountpoint, &options);
+    // let request = tonic::Request::new(LookupDirectoryEntryRequest {
+    //     name: "test1".into(),
+    //     directory: "/".into(),
+    // });
 
-    let first_filer = filer_urls[0].as_str().to_string();
+    // let response = filer_client.client.lookup_directory_entry(request).await.unwrap();
 
-    let mut client = SeaweedFilerClient::connect(first_filer).await.unwrap();
+    // info!("RESPONSE={:?}", response);
 
-    let request = tonic::Request::new(LookupDirectoryEntryRequest {
-        name: "test1".into(),
-        directory: "/".into(),
-    });
+    let fuse_args = [OsStr::new("-o"), OsStr::new("fsname=swfs")];
 
-    let response = client.lookup_directory_entry(request).await.unwrap();
-
-    info!("RESPONSE={:?}", response);
+    fuse_mt::mount(fuse_mt::FuseMT::new(filesystem, 1), mountpoint, &fuse_args[..]).unwrap();
 
     Ok(())
     
-}
-
-fn parse_str_to_url(url_str: String) -> Result<Url, url::ParseError>
-{
-    return Url::parse(url_str.as_str());
 }
 
