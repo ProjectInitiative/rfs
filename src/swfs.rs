@@ -216,6 +216,14 @@ impl FilesystemMT for Swfs {
         debug!("readdir: {:?}", path);
         let mut entries: Vec<DirectoryEntry> = vec![];
         // request all entries in given directory
+        entries.push(DirectoryEntry {
+            name: ".".into(),
+            kind: FileType::Directory,
+        });
+        entries.push(DirectoryEntry {
+            name: "..".into(),
+            kind: FileType::Directory,
+        });
 
         let info = match extract_name_parent_from_path(path) {
             Some(info) => info,
