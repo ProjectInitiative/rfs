@@ -3,25 +3,21 @@
 // Implemented using fuse_mt::FilesystemMT.
 //
 
-use std::time;
-use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fs::{self, File};
-use std::io::{self, Read, Write, Seek, SeekFrom};
-use std::mem;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use crate::filer_client::FilerClient;
+use crate::filer_pb::{ListEntriesRequest, LookupDirectoryEntryRequest};
+use crate::filer_utils::{
+    convert_entry_to_swfsfile, convert_unix_sec_to_system_time, extract_name_parent_from_path,
+};
+use reqwest::Url;
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use crate::filer_client::FilerClient;
-use crate::filer_pb::{LookupDirectoryEntryRequest, LookupDirectoryEntryResponse};
-use crate::filer_utils::convert_unix_sec_to_system_time;
-
 
 use fuse_mt::*;
 use log::debug;
-use tokio::runtime::{Handle, Runtime};
-use tonic::Response;
-use tonic::codegen::http::response;
 
 pub struct Swfs {
     pub target: OsString,
@@ -35,9 +31,11 @@ fn mode_to_filetype(mode: libc::mode_t) -> FileType {
         libc::S_IFLNK => FileType::Symlink,
         libc::S_IFBLK => FileType::BlockDevice,
         libc::S_IFCHR => FileType::CharDevice,
-        libc::S_IFIFO  => FileType::NamedPipe,
+        libc::S_IFIFO => FileType::NamedPipe,
         libc::S_IFSOCK => FileType::Socket,
-        _ => { panic!("unknown file type"); }
+        _ => {
+            panic!("unknown file type");
+        }
     }
 }
 
@@ -50,8 +48,8 @@ fn stat_to_fuse(stat: libc::stat64) -> FileAttr {
     let kind = mode_to_filetype(stat.st_mode);
     let perm = (stat.st_mode & 0o7777) as u16;
 
-    let time = |secs: i64, nanos: i64|
-        SystemTime::UNIX_EPOCH + Duration::new(secs as u64, nanos as u32);
+    let time =
+        |secs: i64, nanos: i64| SystemTime::UNIX_EPOCH + Duration::new(secs as u64, nanos as u32);
 
     // libc::nlink_t is wildly different sizes on different platforms:
     // linux amd64: u64
@@ -87,7 +85,7 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
         ffree: statfs.f_ffree,
         bsize: statfs.f_bsize as u32,
         namelen: 0, // TODO
-        frsize: 0, // TODO
+        frsize: 0,  // TODO
     }
 }
 
@@ -108,25 +106,25 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
 impl Swfs {
     fn real_path(&self, partial: &Path) -> OsString {
         PathBuf::from(&self.target)
-                .join(partial.strip_prefix("/").unwrap())
-                .into_os_string()
+            .join(partial.strip_prefix("/").unwrap())
+            .into_os_string()
     }
 
-    fn stat_real(&self, path: &Path) -> io::Result<FileAttr> {
-        let real: OsString = self.real_path(path);
-        debug!("stat_real: {:?}", real);
-        Err(io::Error::from_raw_os_error(1))
-        // match libc_wrappers::lstat(real) {
-        //     Ok(stat) => {
-        //         Ok(stat_to_fuse(stat))
-        //     },
-        //     Err(e) => {
-        //         let err = io::Error::from_raw_os_error(e);
-        //         error!("lstat({:?}): {}", path, err);
-        //         Err(err)
-        //     }
-        // }
-    }
+    // fn stat_real(&self, path: &Path) -> io::Result<FileAttr> {
+    //     let real: OsString = self.real_path(path);
+    //     debug!("stat_real: {:?}", real);
+    //     Err(io::Error::from_raw_os_error(1))
+    // match libc_wrappers::lstat(real) {
+    //     Ok(stat) => {
+    //         Ok(stat_to_fuse(stat))
+    //     },
+    //     Err(e) => {
+    //         let err = io::Error::from_raw_os_error(e);
+    //         error!("lstat({:?}): {}", path, err);
+    //         Err(err)
+    //     }
+    // }
+    // }
 }
 
 const TTL: Duration = Duration::from_secs(1);
@@ -143,74 +141,61 @@ impl FilesystemMT for Swfs {
 
     fn getattr(&self, _req: RequestInfo, path: &Path, fh: Option<u64>) -> ResultEntry {
         debug!("getattr: {:?}", path);
-        
+
         // let mut client = self.filer_client.client.clone();
+        let info = match extract_name_parent_from_path(path) {
+            Some(info) => info,
+            None => {
+                error!("parsing name and parent from path");
+                return Err(libc::EREMOTEIO);
+            }
+        };
+
         let response = match self.filer_client.rt.block_on(async move {
-            let mut client = self.filer_client.client.clone();
+            let mut client = self.filer_client.client.lock().unwrap();
+            // let mut client = self.filer_client.client.clone();
+
             let request = tonic::Request::new(LookupDirectoryEntryRequest {
-                name: "test1".into(),
-                directory: "/".into(),
+                name: info.0.to_string(),
+                directory: info.1.to_string(),
             });
             client.lookup_directory_entry(request).await
-        })
-        {
-            Ok(response) => response.into_inner(),
-            Err(e) => return Err(libc::EREMOTEIO)
+        }) {
+            Ok(response) => response,
+            Err(e) => {
+                error!(
+                    "response issue for {} and parent {}",
+                    info.0.to_string(),
+                    info.1.to_string()
+                );
+                error!("{:?}", e.details());
+                return Err(libc::EREMOTEIO);
+            }
         };
 
-        let mut file_type = FileType::Directory;
-        let mut nlink = 0;
-
-        let attributes = match response.entry {
-            Some(entry) => match entry.attributes {
-                Some(attr) => {
-                    if !entry.is_directory { file_type = FileType::RegularFile; }
-                    nlink = entry.hard_link_counter;
-                    attr
-                },
-                None => return Err(libc::EREMOTEIO)
-            }, 
-            None => return Err(libc::EREMOTEIO)
+        let entry = match response.into_inner().entry {
+            Some(entry) => entry,
+            None => {
+                error!("unwrapping response from server");
+                return Err(libc::EREMOTEIO);
+            }
         };
 
-        let attr = FileAttr {
-            size: attributes.file_size as u64,
-            blocks: 0,
-            atime: convert_unix_sec_to_system_time(attributes.mtime as u64),
-            mtime: convert_unix_sec_to_system_time(attributes.mtime as u64),
-            ctime: convert_unix_sec_to_system_time(attributes.crtime as u64),
-            crtime: convert_unix_sec_to_system_time(attributes.crtime as u64),
-            kind: file_type,
-            perm: attributes.file_mode as u16,
-            nlink: nlink as u32,
-            uid: attributes.uid,
-            gid: attributes.gid,
-            rdev:attributes.rdev,
-            flags: 0,
+        let swfs_file_attr = match convert_entry_to_swfsfile(path, entry) {
+            Some(swfs_file) => swfs_file.attr,
+            None => {
+                error!("extracting info from server");
+                return Err(libc::EREMOTEIO);
+            }
         };
 
-        return Ok((TTL, attr));
-
-        
-        // Err(libc::ENOTSUP)
-
-        // if let Some(fh) = fh {
-        //     match libc_wrappers::fstat(fh) {
-        //         Ok(stat) => Ok((TTL, stat_to_fuse(stat))),
-        //         Err(e) => Err(e)
-        //     }
-        // } else {
-        //     match self.stat_real(path) {
-        //         Ok(attr) => Ok((TTL, attr)),
-        //         Err(e) => Err(e.raw_os_error().unwrap())
-        //     }
-        // }
+        Ok((TTL, swfs_file_attr))
     }
 
     fn opendir(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
         let real = self.real_path(path);
         debug!("opendir: {:?} (flags = {:#o})", real, _flags);
-        Ok((0,0))
+        Ok((0, 0))
         // Err(libc::ENOTSUP)
         // match libc_wrappers::opendir(real) {
         //     Ok(fh) => Ok((fh, 0)),
@@ -232,7 +217,54 @@ impl FilesystemMT for Swfs {
         debug!("readdir: {:?}", path);
         let mut entries: Vec<DirectoryEntry> = vec![];
         // request all entries in given directory
-        Err(libc::ENOTSUP)
+
+        let info = match extract_name_parent_from_path(path) {
+            Some(info) => info,
+            None => return Err(libc::EREMOTEIO),
+        };
+        let path_as_str = match path.to_str() {
+            Some(path) => path.to_string(),
+            None => return Err(libc::ENOENT),
+        };
+
+        let response = match self.filer_client.rt.block_on(async move {
+            let mut client = self.filer_client.client.lock().unwrap();
+            let request = tonic::Request::new(ListEntriesRequest {
+                directory: path_as_str,
+                // directory: info.1.to_string(),
+                prefix: "".into(),
+                start_from_file_name: "".to_string(),
+                inclusive_start_from: false,
+                limit: 100,
+            });
+            client.list_entries(request).await
+        }) {
+            Ok(response) => response,
+            Err(e) => {
+                error!("{:?}", e.details());
+                return Err(libc::EREMOTEIO);
+            }
+        };
+
+        let mut stream = response.into_inner();
+        self.filer_client.rt.block_on(async {
+            // stream is infinite - take just 5 elements and then disconnect
+            while let Some(item) = stream.message().await.unwrap() {
+                let swfs_file_attr =
+                    match convert_entry_to_swfsfile(path, item.clone().entry.unwrap()) {
+                        Some(swfs_file) => swfs_file.attr,
+                        None => continue,
+                    };
+                // info!("\treceived: {:?}", path.file_name().unwrap().to_str());
+                entries.push(DirectoryEntry {
+                    name: item.entry.unwrap().name.into(),
+                    kind: swfs_file_attr.kind,
+                });
+                // stream is droped here and the disconnect info is send to server
+            }
+        });
+
+        Ok(entries)
 
         // if fh == 0 {
         //     error!("readdir: missing fh");
@@ -300,13 +332,29 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn release(&self, _req: RequestInfo, path: &Path, fh: u64, _flags: u32, _lock_owner: u64, _flush: bool) -> ResultEmpty {
+    fn release(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
+    ) -> ResultEmpty {
         debug!("release: {:?}", path);
         Err(libc::ENOTSUP)
         // libc_wrappers::close(fh)
     }
 
-    fn read(&self, _req: RequestInfo, path: &Path, fh: u64, offset: u64, size: u32, callback: impl FnOnce(ResultSlice<'_>) -> CallbackResult) -> CallbackResult {
+    fn read(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        fh: u64,
+        offset: u64,
+        size: u32,
+        callback: impl FnOnce(ResultSlice<'_>) -> CallbackResult,
+    ) -> CallbackResult {
         debug!("read: {:?} {:#x} @ {:#x}", path, size, offset);
         callback(Err(libc::ENOTSUP))
 
@@ -329,10 +377,18 @@ impl FilesystemMT for Swfs {
         // callback(Ok(&data))
     }
 
-    fn write(&self, _req: RequestInfo, path: &Path, fh: u64, offset: u64, data: Vec<u8>, _flags: u32) -> ResultWrite {
+    fn write(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        fh: u64,
+        offset: u64,
+        data: Vec<u8>,
+        _flags: u32,
+    ) -> ResultWrite {
         debug!("write: {:?} {:#x} @ {:#x}", path, data.len(), offset);
         Err(libc::ENOTSUP)
-        
+
         // let mut file = unsafe { UnmanagedFile::new(fh) };
 
         // if let Err(e) = file.seek(SeekFrom::Start(offset)) {
@@ -368,7 +424,7 @@ impl FilesystemMT for Swfs {
         debug!("fsync: {:?}, data={:?}", path, datasync);
 
         Err(libc::ENOTSUP)
-        
+
         // let file = unsafe { UnmanagedFile::new(fh) };
 
         // if let Err(e) = if datasync {
@@ -406,9 +462,16 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn chown(&self, _req: RequestInfo, path: &Path, fh: Option<u64>, uid: Option<u32>, gid: Option<u32>) -> ResultEmpty {
-        let uid = uid.unwrap_or(::std::u32::MAX);   // docs say "-1", but uid_t is unsigned
-        let gid = gid.unwrap_or(::std::u32::MAX);   // ditto for gid_t
+    fn chown(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        fh: Option<u64>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> ResultEmpty {
+        let uid = uid.unwrap_or(::std::u32::MAX); // docs say "-1", but uid_t is unsigned
+        let gid = gid.unwrap_or(::std::u32::MAX); // ditto for gid_t
         debug!("chown: {:?} to {}:{}", path, uid, gid);
         Err(libc::ENOTSUP)
 
@@ -454,7 +517,14 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn utimens(&self, _req: RequestInfo, path: &Path, fh: Option<u64>, atime: Option<SystemTime>, mtime: Option<SystemTime>) -> ResultEmpty {
+    fn utimens(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        fh: Option<u64>,
+        atime: Option<SystemTime>,
+        mtime: Option<SystemTime>,
+    ) -> ResultEmpty {
         debug!("utimens: {:?}: {:?}, {:?}", path, atime, mtime);
         Err(libc::ENOTSUP)
 
@@ -548,8 +618,18 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn mknod(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, mode: u32, rdev: u32) -> ResultEntry {
-        debug!("mknod: {:?}/{:?} (mode={:#o}, rdev={})", parent_path, name, mode, rdev);
+    fn mknod(
+        &self,
+        _req: RequestInfo,
+        parent_path: &Path,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
+    ) -> ResultEntry {
+        debug!(
+            "mknod: {:?}/{:?} (mode={:#o}, rdev={})",
+            parent_path, name, mode, rdev
+        );
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         Err(libc::ENOTSUP)
@@ -623,7 +703,13 @@ impl FilesystemMT for Swfs {
         //     })
     }
 
-    fn symlink(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, target: &Path) -> ResultEntry {
+    fn symlink(
+        &self,
+        _req: RequestInfo,
+        parent_path: &Path,
+        name: &OsStr,
+        target: &Path,
+    ) -> ResultEntry {
         debug!("symlink: {:?}/{:?} -> {:?}", parent_path, name, target);
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
@@ -646,8 +732,18 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn rename(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, newparent_path: &Path, newname: &OsStr) -> ResultEmpty {
-        debug!("rename: {:?}/{:?} -> {:?}/{:?}", parent_path, name, newparent_path, newname);
+    fn rename(
+        &self,
+        _req: RequestInfo,
+        parent_path: &Path,
+        name: &OsStr,
+        newparent_path: &Path,
+        newname: &OsStr,
+    ) -> ResultEmpty {
+        debug!(
+            "rename: {:?}/{:?} -> {:?}/{:?}",
+            parent_path, name, newparent_path, newname
+        );
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         let newreal = PathBuf::from(self.real_path(newparent_path)).join(newname);
@@ -660,7 +756,13 @@ impl FilesystemMT for Swfs {
         //     })
     }
 
-    fn link(&self, _req: RequestInfo, path: &Path, newparent: &Path, newname: &OsStr) -> ResultEntry {
+    fn link(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        newparent: &Path,
+        newname: &OsStr,
+    ) -> ResultEntry {
         debug!("link: {:?} -> {:?}/{:?}", path, newparent, newname);
 
         let real = self.real_path(path);
@@ -684,12 +786,22 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn create(&self, _req: RequestInfo, parent: &Path, name: &OsStr, mode: u32, flags: u32) -> ResultCreate {
-        debug!("create: {:?}/{:?} (mode={:#o}, flags={:#x})", parent, name, mode, flags);
+    fn create(
+        &self,
+        _req: RequestInfo,
+        parent: &Path,
+        name: &OsStr,
+        mode: u32,
+        flags: u32,
+    ) -> ResultCreate {
+        debug!(
+            "create: {:?}/{:?} (mode={:#o}, flags={:#x})",
+            parent, name, mode, flags
+        );
 
         let real = PathBuf::from(self.real_path(parent)).join(name);
         Err(libc::ENOTSUP)
-        
+
         // let fd = unsafe {
         //     let real_c = CString::from_vec_unchecked(real.clone().into_os_string().into_vec());
         //     libc::open(real_c.as_ptr(), flags as i32 | libc::O_CREAT | libc::O_EXCL, mode)
@@ -752,8 +864,23 @@ impl FilesystemMT for Swfs {
         // }
     }
 
-    fn setxattr(&self, _req: RequestInfo, path: &Path, name: &OsStr, value: &[u8], flags: u32, position: u32) -> ResultEmpty {
-        debug!("setxattr: {:?} {:?} {} bytes, flags = {:#x}, pos = {}", path, name, value.len(), flags, position);
+    fn setxattr(
+        &self,
+        _req: RequestInfo,
+        path: &Path,
+        name: &OsStr,
+        value: &[u8],
+        flags: u32,
+        position: u32,
+    ) -> ResultEmpty {
+        debug!(
+            "setxattr: {:?} {:?} {} bytes, flags = {:#x}, pos = {}",
+            path,
+            name,
+            value.len(),
+            flags,
+            position
+        );
         let real = self.real_path(path);
         Err(libc::ENOTSUP)
 
@@ -778,7 +905,7 @@ impl FilesystemMT for Swfs {
         debug!("getxtimes: {:?}", path);
         let xtimes = XTimes {
             bkuptime: SystemTime::UNIX_EPOCH,
-            crtime:   SystemTime::UNIX_EPOCH,
+            crtime: SystemTime::UNIX_EPOCH,
         };
         Ok(xtimes)
     }
@@ -792,7 +919,7 @@ struct UnmanagedFile {
 impl UnmanagedFile {
     unsafe fn new(fd: u64) -> UnmanagedFile {
         UnmanagedFile {
-            inner: Some(File::from_raw_fd(fd as i32))
+            inner: Some(File::from_raw_fd(fd as i32)),
         }
     }
     fn sync_all(&self) -> io::Result<()> {

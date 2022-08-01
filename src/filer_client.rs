@@ -1,5 +1,6 @@
 use crate::{errors::{FilerParseError, FilerRequestError}, filer_pb::seaweed_filer_client::SeaweedFilerClient};
 
+use std::sync::{Mutex};
 use reqwest::Url;
 use tokio::runtime::Runtime;
 use tonic::{Request, transport::Channel};
@@ -7,7 +8,7 @@ use tonic::{Request, transport::Channel};
 pub struct FilerClient {
     pub rt: Runtime,
     pub filer_urls: Vec<Url>,
-    pub client: SeaweedFilerClient<Channel>,
+    pub client: Mutex<SeaweedFilerClient<Channel>>,
 }
 
 impl FilerClient {
@@ -17,23 +18,24 @@ impl FilerClient {
         .enable_all()
         .build()?;
 
-        let filer_urls: Vec<Url> = match filers.split(",").collect::<Vec<&str>>()
+        let filer_urls: Vec<Url> = match filers.split(',').collect::<Vec<&str>>()
             .iter().map(
                 |filer_str|
                 {
-                    match parse_str_to_url(filer_str.to_string())
+                    Ok(match parse_str_to_url(filer_str.to_string())
                     {
                         Ok(url) => {
                             if !url.has_host()
                             {
                                 return Err(FilerParseError::new("missing filer scheme or host address, rerun with -h|--help to see proper format"));
                             }
-                            return Ok(url);
+                            url
+                            // return Ok(url);
                         },
                         Err(e) => { 
                             return Err(FilerParseError::new(format!("parsing {filer_str:?}: {e:?}").as_str()));
                         }
-                    };
+                    })
                 }
             ).collect()
             {
@@ -46,7 +48,7 @@ impl FilerClient {
             let client = rt.block_on(async {
                 let endpoints = filer_urls
                 .iter().map(|url| {
-                    let url_str = url.to_string().to_owned();
+                    let url_str = url.to_string();
                     Channel::from_shared(url_str)
                 }).filter_map(|endpoint| endpoint.ok());
             
@@ -55,13 +57,12 @@ impl FilerClient {
                 SeaweedFilerClient::new(channel)
             });
 
-
-            return Ok(FilerClient
+            Ok(FilerClient
             {
-                rt: rt,
-                filer_urls: filer_urls,
-                client: client
-            });
+                rt,
+                filer_urls,
+                client: Mutex::new(client),
+            })
             
            
         
