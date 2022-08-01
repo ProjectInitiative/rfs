@@ -142,7 +142,6 @@ impl FilesystemMT for Swfs {
     fn getattr(&self, _req: RequestInfo, path: &Path, fh: Option<u64>) -> ResultEntry {
         debug!("getattr: {:?}", path);
 
-        // let mut client = self.filer_client.client.clone();
         let info = match extract_name_parent_from_path(path) {
             Some(info) => info,
             None => {
@@ -150,10 +149,10 @@ impl FilesystemMT for Swfs {
                 return Err(libc::EREMOTEIO);
             }
         };
-
-        let response = match self.filer_client.rt.block_on(async move {
-            let mut client = self.filer_client.client.lock().unwrap();
-            // let mut client = self.filer_client.client.clone();
+        let handle = self.filer_client.rt.handle().clone();
+        let response = match handle.block_on(async move {
+            // let mut client = self.filer_client.client.lock().unwrap();
+            let mut client = self.filer_client.client.clone();
 
             let request = tonic::Request::new(LookupDirectoryEntryRequest {
                 name: info.0.to_string(),
@@ -227,8 +226,10 @@ impl FilesystemMT for Swfs {
             None => return Err(libc::ENOENT),
         };
 
-        let response = match self.filer_client.rt.block_on(async move {
-            let mut client = self.filer_client.client.lock().unwrap();
+        let handle = self.filer_client.rt.handle().clone();
+        let response = match handle.block_on(async move {
+            // let mut client = self.filer_client.client.lock().unwrap();
+            let mut client = self.filer_client.client.clone();
             let request = tonic::Request::new(ListEntriesRequest {
                 directory: path_as_str,
                 // directory: info.1.to_string(),

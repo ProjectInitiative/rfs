@@ -8,7 +8,8 @@ use tonic::{Request, transport::Channel};
 pub struct FilerClient {
     pub rt: Runtime,
     pub filer_urls: Vec<Url>,
-    pub client: Mutex<SeaweedFilerClient<Channel>>,
+    pub client: SeaweedFilerClient<Channel>,
+    // pub client: Mutex<SeaweedFilerClient<Channel>>,
 }
 
 impl FilerClient {
@@ -61,7 +62,8 @@ impl FilerClient {
             {
                 rt,
                 filer_urls,
-                client: Mutex::new(client),
+                client,
+                // client: Mutex::new(client),
             })
             
            
