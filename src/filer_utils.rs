@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::filer_pb::Entry;
+use crate::pb::filer_pb::Entry;
 
 #[derive(Clone)]
 pub struct SwfsFile<'a> {

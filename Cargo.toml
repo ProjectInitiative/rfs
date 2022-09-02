@@ -24,6 +24,7 @@ log = "0.4.17"
 libc = "0.2.126"
 tonic = "0.7.2"
 prost = "0.10.4"
+ctrlc = "3.2.2"
 
 [build-dependencies]
 tonic-build = { version = "0.7.2", features = ["prost"] }

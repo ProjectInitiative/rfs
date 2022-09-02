@@ -4,10 +4,10 @@
 //
 
 use crate::filer_client::FilerClient;
-use crate::filer_pb::{ListEntriesRequest, LookupDirectoryEntryRequest};
 use crate::filer_utils::{
     convert_entry_to_swfsfile, convert_unix_sec_to_system_time, extract_name_parent_from_path,
 };
+use crate::pb::filer_pb::{ListEntriesRequest, LookupDirectoryEntryRequest};
 use reqwest::Url;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -127,16 +127,17 @@ impl Swfs {
     // }
 }
 
-const TTL: Duration = Duration::from_secs(1);
+// cache for 30 minutes
+const TTL: Duration = Duration::from_secs(1800);
 
 impl FilesystemMT for Swfs {
     fn init(&self, _req: RequestInfo) -> ResultEmpty {
-        debug!("init");
+        debug!("init: complete");
         Ok(())
     }
 
     fn destroy(&self) {
-        debug!("destroy");
+        debug!("destroy: complete");
     }
 
     fn getattr(&self, _req: RequestInfo, path: &Path, fh: Option<u64>) -> ResultEntry {
@@ -145,14 +146,14 @@ impl FilesystemMT for Swfs {
         let info = match extract_name_parent_from_path(path) {
             Some(info) => info,
             None => {
-                error!("parsing name and parent from path");
+                error!("getatrr: path conversion failure");
                 return Err(libc::EREMOTEIO);
             }
         };
         let handle = self.filer_client.rt.handle().clone();
         let response = match handle.block_on(async move {
             // let mut client = self.filer_client.client.lock().unwrap();
-            let mut client = self.filer_client.client.clone();
+            let mut client = self.filer_client.filer_grpc_client.clone();
 
             let request = tonic::Request::new(LookupDirectoryEntryRequest {
                 name: info.0.to_string(),
@@ -163,11 +164,11 @@ impl FilesystemMT for Swfs {
             Ok(response) => response,
             Err(e) => {
                 error!(
-                    "response issue for {} and parent {}",
+                    "getatrr: response issue for file: {} and parent: {}",
                     info.0.to_string(),
                     info.1.to_string()
                 );
-                error!("{:?}", e.details());
+                error!("getattr: {:?}", e.details());
                 return Err(libc::EREMOTEIO);
             }
         };
@@ -175,7 +176,7 @@ impl FilesystemMT for Swfs {
         let entry = match response.into_inner().entry {
             Some(entry) => entry,
             None => {
-                error!("unwrapping response from server");
+                error!("getattr: unwrapping response from server");
                 return Err(libc::EREMOTEIO);
             }
         };
@@ -183,7 +184,7 @@ impl FilesystemMT for Swfs {
         let swfs_file_attr = match convert_entry_to_swfsfile(path, entry) {
             Some(swfs_file) => swfs_file.attr,
             None => {
-                error!("extracting info from server");
+                error!("getatrr: extracting info from server");
                 return Err(libc::EREMOTEIO);
             }
         };
@@ -192,8 +193,10 @@ impl FilesystemMT for Swfs {
     }
 
     fn opendir(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
-        let real = self.real_path(path);
-        debug!("opendir: {:?} (flags = {:#o})", real, _flags);
+        // let real = self.real_path(path);
+        // debug!("opendir: {:?} (flags = {:#o})", real, _flags);
+        // TODO add permissions check here later if permitted
+        debug!("opendir: {:?} (flags = {:#o})", path, _flags);
         Ok((0, 0))
         // Err(libc::ENOTSUP)
         // match libc_wrappers::opendir(real) {
@@ -214,6 +217,12 @@ impl FilesystemMT for Swfs {
 
     fn readdir(&self, _req: RequestInfo, path: &Path, fh: u64) -> ResultReaddir {
         debug!("readdir: {:?}", path);
+        // file handle will always be zero, see opendir for network filesystem
+        // if fh == 0 {
+        //     error!("readdir: missing fh");
+        //     return Err(libc::EINVAL);
+        // }
+
         let mut entries: Vec<DirectoryEntry> = vec![];
         // request all entries in given directory
         entries.push(DirectoryEntry {
@@ -225,60 +234,62 @@ impl FilesystemMT for Swfs {
             kind: FileType::Directory,
         });
 
-        let info = match extract_name_parent_from_path(path) {
-            Some(info) => info,
-            None => return Err(libc::EREMOTEIO),
-        };
         let path_as_str = match path.to_str() {
             Some(path) => path.to_string(),
-            None => return Err(libc::ENOENT),
+            None => {
+                error!("readdir: path does not exist or empty");
+                return Err(libc::ENOENT);
+            }
+        };
+        let info = match extract_name_parent_from_path(path) {
+            Some(info) => info,
+            None => {
+                error!("readdir: path conversion failure");
+                return Err(libc::EREMOTEIO);
+            }
         };
 
+        // get handle to tokio runtime and spawn blocking async block
         let handle = self.filer_client.rt.handle().clone();
         let response = match handle.block_on(async move {
             // let mut client = self.filer_client.client.lock().unwrap();
-            let mut client = self.filer_client.client.clone();
+            let mut client = self.filer_client.filer_grpc_client.clone();
             let request = tonic::Request::new(ListEntriesRequest {
                 directory: path_as_str,
                 // directory: info.1.to_string(),
                 prefix: "".into(),
                 start_from_file_name: "".to_string(),
                 inclusive_start_from: false,
-                limit: 100,
+                limit: 0,
             });
             client.list_entries(request).await
         }) {
             Ok(response) => response,
             Err(e) => {
-                error!("{:?}", e.details());
+                error!("readdir: {:?}", e.details());
                 return Err(libc::EREMOTEIO);
             }
         };
 
         let mut stream = response.into_inner();
         self.filer_client.rt.block_on(async {
-            // stream is infinite - take just 5 elements and then disconnect
+            // stream is infinite, until last item is reached
+            //TODO properly handle unwraps
             while let Some(item) = stream.message().await.unwrap() {
                 let swfs_file_attr =
                     match convert_entry_to_swfsfile(path, item.clone().entry.unwrap()) {
                         Some(swfs_file) => swfs_file.attr,
                         None => continue,
                     };
-                // info!("\treceived: {:?}", path.file_name().unwrap().to_str());
                 entries.push(DirectoryEntry {
                     name: item.entry.unwrap().name.into(),
                     kind: swfs_file_attr.kind,
                 });
-                // stream is droped here and the disconnect info is send to server
+                // stream is dropped here and the disconnect info is send to server
             }
         });
 
         Ok(entries)
-
-        // if fh == 0 {
-        //     error!("readdir: missing fh");
-        //     return Err(libc::EINVAL);
-        // }
 
         // loop {
         //     match libc_wrappers::readdir(fh) {
@@ -329,8 +340,9 @@ impl FilesystemMT for Swfs {
 
     fn open(&self, _req: RequestInfo, path: &Path, flags: u32) -> ResultOpen {
         debug!("open: {:?} flags={:#x}", path, flags);
-        let real = self.real_path(path);
-        Err(libc::ENOTSUP)
+        // let real = self.real_path(path);
+        // Err(libc::ENOTSUP)
+        Ok((0, flags))
 
         // match libc_wrappers::open(real, flags as libc::c_int) {
         //     Ok(fh) => Ok((fh, flags)),
@@ -365,7 +377,98 @@ impl FilesystemMT for Swfs {
         callback: impl FnOnce(ResultSlice<'_>) -> CallbackResult,
     ) -> CallbackResult {
         debug!("read: {:?} {:#x} @ {:#x}", path, size, offset);
-        callback(Err(libc::ENOTSUP))
+
+        let mut data = Vec::<u8>::with_capacity(size as usize);
+
+        let info = match extract_name_parent_from_path(path) {
+            Some(info) => info,
+            None => {
+                error!("read: path conversion failure");
+                return callback(Err(libc::EREMOTEIO));
+            }
+        };
+        let handle = self.filer_client.rt.handle().clone();
+        let response = match handle.block_on(async move {
+            // let mut client = self.filer_client.client.lock().unwrap();
+            // let mut client = self.filer_client.filer_grpc_client.clone();
+            let mut client = self.filer_client.filer_http_client.clone();
+
+            let request = tonic::Request::new(LookupDirectoryEntryRequest {
+                name: info.0.to_string(),
+                directory: info.1.to_string(),
+            });
+
+            // client.lookup_directory_entry(request).await
+            let request_filer = match self.filer_client.get_next_http_filer() {
+                Some(filer) => filer,
+                None => {
+                    error!("read: unable to get next filer");
+                    return Err(libc::EREMOTEIO);
+                }
+            };
+            let request_url = match request_filer.join(match path.to_str() {
+                Some(path) => path,
+                None => {
+                    error!("read: unable to create string from provided path");
+                    return Err(libc::EREMOTEIO);
+                }
+            }) {
+                Ok(joined_url) => joined_url,
+                Err(e) => {
+                    error!("read: unable joining url {:?}", e);
+                    return Err(libc::EREMOTEIO);
+                }
+            };
+            let request_response = match client.get(request_url).send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    error!("read: unable to connect to server {:?}", e);
+                    return Err(libc::EREMOTEIO);
+                }
+            };
+
+            let bytes = match request_response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    error!("read: getting response from server {:?}", e);
+                    return Err(libc::EREMOTEIO);
+                }
+            };
+            Ok(bytes)
+        }) {
+            Ok(response) => response,
+            Err(_) => {
+                // error!("read: {:?}", e.details());
+                return callback(Err(libc::EREMOTEIO));
+            }
+        };
+
+        // let entry = match response.into_inner().entry {
+        //     Some(entry) => entry,
+        //     None => {
+        //         error!("read: unwrapping response from server");
+        //         return callback(Err(libc::EREMOTEIO));
+        //     }
+        // };
+
+        let data = response.to_vec();
+        debug!(
+            "read: {:?} content_length: {:?}, usize: {:?} offset: {:?}",
+            path,
+            &data.len(),
+            size,
+            offset
+        );
+        // let swfs_file_attr = match convert_entry_to_swfsfile(path, entry) {
+        //     Some(swfs_file) => swfs_file.attr,
+        //     None => {
+        //         error!("read: extracting info from server");
+        //         return Err(libc::EREMOTEIO);
+        //     }
+        // };
+
+        callback(Ok(&data))
+        // callback(Err(libc::ENOTSUP))
 
         // let mut file = unsafe { UnmanagedFile::new(fh) };
 
@@ -417,7 +520,8 @@ impl FilesystemMT for Swfs {
 
     fn flush(&self, _req: RequestInfo, path: &Path, fh: u64, _lock_owner: u64) -> ResultEmpty {
         debug!("flush: {:?}", path);
-        Err(libc::ENOTSUP)
+        Ok(())
+        // Err(libc::ENOTSUP)
 
         // let mut file = unsafe { UnmanagedFile::new(fh) };
 

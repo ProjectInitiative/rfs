@@ -1,6 +1,8 @@
 use clap::Parser;
 use fuser::MountOption;
 use std::ffi::OsStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use swfs::Swfs;
 
 use crate::filer_client::FilerClient;
@@ -32,12 +34,22 @@ impl log::Log for ConsoleLogger {
 
 static LOGGER: ConsoleLogger = ConsoleLogger;
 
-pub mod filer_pb {
-    tonic::include_proto!("filer_pb");
+pub mod pb {
+    pub mod filer_pb {
+        tonic::include_proto!("filer_pb");
+    }
+    pub mod master_pb {
+        tonic::include_proto!("master_pb");
+    }
+    pub mod volume_pb {
+        tonic::include_proto!("volume_server_pb");
+    }
+    pub mod remote_pb {
+        tonic::include_proto!("remote_pb");
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // fn main() {
     // collect arguments
     let args = options::Args::parse();
 
@@ -60,13 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // env_logger::init();
     let mountpoint = args.mnt_dir;
-    let mut options = vec![MountOption::RO, MountOption::FSName("hello".to_string())];
-    // if matches.is_present("auto_unmount") {
-    //     options.push(MountOption::AutoUnmount);
-    // }
-    // if matches.is_present("allow-root") {
-    //     options.push(MountOption::AllowRoot);
-    // }
 
     // let rt = Runtime::new().unwrap();
     // let handle = rt.handle().clone();
@@ -90,14 +95,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // info!("RESPONSE={:?}", response);
 
-    let fuse_args = [OsStr::new("-o"), OsStr::new("fsname=swfs")];
+    let fuse_args = [
+        // OsStr::new("-o"), OsStr::new("allow_other"),
+        // OsStr::new("-o"), OsStr::new("auto_unmount"),
+        OsStr::new("-o"),
+        OsStr::new("max_read=0"),
+        OsStr::new("-o"),
+        OsStr::new("fsname=swfs"),
+    ];
 
-    fuse_mt::mount(
-        fuse_mt::FuseMT::new(filesystem, 1),
+    // fuse_mt::mount(
+    //     fuse_mt::FuseMT::new(filesystem, 4),
+    //     mountpoint,
+    //     &fuse_args[..],
+    // )
+    // .unwrap();
+
+    let fuse_handle = match fuse_mt::spawn_mount(
+        fuse_mt::FuseMT::new(filesystem, 4),
         mountpoint,
         &fuse_args[..],
-    )
-    .unwrap();
+    ) {
+        Ok(fuse_handle) => fuse_handle,
+        Err(e) => {
+            error!("could not spawn mount {:?}", e);
+            return Err(e)?;
+        }
+    };
+
+    // setup signal termination handler
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    info!("Waiting for Ctrl-C...");
+    while running.load(Ordering::SeqCst) {}
+    info!("Unmounting and Exiting...");
+
+    // unmount and clean up dangling thread
+    drop(fuse_handle);
 
     Ok(())
 }

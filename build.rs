@@ -1,11 +1,24 @@
+use std::fs;
 use std::{env, path::PathBuf};
 
 fn main() {
-
+    // pull output directory from env variable
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // find all .proto files
+    let paths = fs::read_dir("src/protos").unwrap();
+    // convert to vec of Strings
+    let proto_files = paths
+        .filter_map(|entry| {
+            entry.ok().and_then(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str().map(|s| String::from(s)))
+            })
+        })
+        .collect::<Vec<String>>();
     tonic_build::configure()
-        .file_descriptor_set_path(out_dir.join("filer_descriptor.bin"))
-        .compile(&["filer_pb.proto"], &["src/protos"])
+        .file_descriptor_set_path(out_dir.join("protobuf_descriptor.bin"))
+        .compile(proto_files.as_slice(), &["src/protos"])
         .unwrap();
 
     // tonic_build::compile_protos("proto/echo/echo.proto").unwrap();
@@ -26,6 +39,4 @@ fn main() {
     //     .out_dir("src/protos")
     //     // .cargo_out_dir("protos")
     //     .run_from_script();
-
 }
-
