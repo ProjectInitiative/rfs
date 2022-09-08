@@ -1,30 +1,29 @@
 [package]
-name = "swfsfuse"
+name = "rfs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Kyle Petryszak <projectinitiativedev@gmail.com>"]
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-# sudo apt-get install fuse3
-# sudo apt-get install libfuse-dev pkg-config
+# sudo apt-get install libssl-dev cmake gcc fuse3 libfuse-dev pkg-config
 # https://github.com/cberner/fuser
 
 [dependencies]
-clap = { version = "3.2.8", features = ["derive"] }
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 tokio = { version = "1.20", features = ["full"] }
 url = { version = "2", features = ["serde"] }
 serde_json = "1.0"
 fuser = "0.11"
 chrono = "0.4.19"
-uuid = { version = "1.1.2", features = [ "v4","fast-rng", "macro-diagnostics"] }
+uuid = { version = "1.1.2", features = ["v4", "fast-rng", "macro-diagnostics"] }
 fuse_mt = "0.6.0"
 log = "0.4.17"
 libc = "0.2.126"
 tonic = "0.7.2"
 prost = "0.10.4"
 ctrlc = "3.2.2"
+clap = { version = "3.2.20", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = { version = "0.7.2", features = ["prost"] }
