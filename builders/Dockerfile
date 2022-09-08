@@ -1,4 +1,4 @@
-FROM docker.io/golang:1.18 as build 
+FROM docker.io/golang:1.18 as build-swfs 
 
 
 RUN git clone --depth 1 -b master https://github.com/chrislusf/seaweedfs /go/src/seaweedfs
@@ -9,6 +9,16 @@ RUN sed -i -e 's/\bParityShardsCount\s*=\s*6\b/ParityShardsCount = 4/g' storage/
 
 RUN  GO_ENABLED=0 GOOS=linux \
   go build -gcflags=all="-N -l" -tags "large_disk 5BytesOffset" -ldflags "-extldflags -static -X github.com/chrislusf/seaweedfs/weed/util.COMMIT=$(git rev-parse --short HEAD)" -o /go/bin
+
+FROM docker.io/rust:1.62-buster as build-rfs
+
+COPY --from=build-swfs /go/bin/weed /bin/
+WORKDIR /src/
+COPY . /src/
+
+RUN apt-get update && apt-get -y install libssl-dev cmake gcc fuse3 libfuse-dev pkg-config > /dev/null
+
+RUN cargo build --release && mv ./target/release/rfs /bin/
 
 # RUN SWCOMMIT=$(git rev-parse --short HEAD) \
 #   SWLDFLAGS="-X github.com/chrislusf/seaweedfs/weed/util.COMMIT=$SWCOMMIT" \
