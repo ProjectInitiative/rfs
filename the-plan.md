@@ -21,7 +21,7 @@ Some examples are:
 This did not pan out, as the caching still required downloading the fully modified block per object.
 
 * Setup garage and use [s3backer](https://github.com/archiecobbs/s3backer) to provide raw block devices for kvm-qemu VMs
-This in theory can work. Proxmox utilizes [rbd](https://docs.ceph.com/en/quincy/rbd/) to achieve block level devices for VMs. Qemu had direct support to connect to a ceph (rbd)[https://github.com/qemu/qemu/blob/master/block/rbd.c], as well as [qemu-img](https://docs.ceph.com/en/quincy/rbd/qemu-rbd/). This is acheived because of the librbd library.
+This in theory can work. Proxmox utilizes [rbd](https://docs.ceph.com/en/quincy/rbd/) to achieve block level devices for VMs. Qemu had direct support to connect to a ceph [rbd](https://github.com/qemu/qemu/blob/master/block/rbd.c), as well as [qemu-img](https://docs.ceph.com/en/quincy/rbd/qemu-rbd/). This is acheived because of the librbd library.
 Again in theory we could get a working setup with S3 and s3backer. It would require large amounts of work: qemu support via a library, direct integration and so on.
 Another potential solution is to add a less direct way to support this by creating scripts or a Rust binary to support Proxmox storage scripts, via mounting and umount s3backer block devices to the host during a live migration, and passing through those disks to the VM instead of relying on kvm-qemu to connect to the block device through s3backer directly.
 
